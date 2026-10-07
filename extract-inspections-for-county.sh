@@ -8,15 +8,19 @@ set -e
 # ==========================================
 COUNTY_CODE="37"
 
-# Target URL dynamically updated with the county code
-URL="https://public.cdpehs.com/KYEnvPBL/(S(5orzccy1md4zjqgkqkbxvhvf))/VW_PUBLIC_EST_INSP/ShowVW_PUBLIC_EST_INSPTable.aspx?COUNTY=${COUNTY_CODE}"
+# Base URL
+BASE_URL="https://public.cdpehs.com/KYEnvPBL/VW_PUBLIC_EST_INSP/ShowVW_PUBLIC_EST_INSPTable.aspx?COUNTY=${COUNTY_CODE}"
 COOKIE_FILE="cookies.txt"
 HTML_FILE="initial_page.html"
 RESPONSE_FILE="response_data.txt"
 OUTPUT_CSV="inspections_county_${COUNTY_CODE}.csv"
 
-echo "Step 1: Visiting page to fetch cookies and initial HTML for County ${COUNTY_CODE}..."
-curl -s -L -c "$COOKIE_FILE" "$URL" -o "$HTML_FILE"
+echo "Step 1: Visiting page and capturing the session-redirected URL for County ${COUNTY_CODE}..."
+
+# Use curl to follow redirects (-L) and output the *final effective URL* to a variable
+FINAL_URL=$(curl -s -L -w "%{url_effective}" -c "$COOKIE_FILE" "$BASE_URL" -o "$HTML_FILE")
+
+echo "Captured Session URL: $FINAL_URL"
 
 echo "Step 2: Extracting __VIEWSTATE and __VIEWSTATEGENERATOR..."
 
@@ -44,15 +48,15 @@ echo "Successfully extracted and encoded ViewState!"
 # Clean up initial HTML file
 rm -f "$HTML_FILE"
 
-echo "Step 3: Performing the POST request with the fresh payloads..."
+echo "Step 3: Performing the POST request using the session-matched URL..."
 
-curl "$URL" \
+curl "$FINAL_URL" \
   -b "$COOKIE_FILE" \
   -c "$COOKIE_FILE" \
   --compressed \
   -s \
   -X POST \
-  -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:152.0) Gecko/20100101 Firefox/152.0' \
+  -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0' \
   -H 'Accept: */*' \
   -H 'Accept-Language: en-US,en;q=0.9' \
   -H 'Accept-Encoding: gzip, deflate, br, zstd' \
@@ -62,7 +66,7 @@ curl "$URL" \
   -H 'Content-Type: application/x-www-form-urlencoded; charset=utf-8' \
   -H 'Origin: https://public.cdpehs.com' \
   -H 'Connection: keep-alive' \
-  -H "Referer: ${URL}" \
+  -H "Referer: ${FINAL_URL}" \
   -H 'Sec-Fetch-Dest: empty' \
   -H 'Sec-Fetch-Mode: cors' \
   -H 'Sec-Fetch-Site: same-origin' \
@@ -136,18 +140,15 @@ for row in parser.rows:
         addr = row[1][0].strip()
         city = row[2][0].strip()
         
-        # 1. Skip completely blank names
         if not name:
             continue
             
-        # 2. Drop the text search filter boxes
         name_lower = name.lower()
         if "(contains)" in name_lower or "(equals)" in name_lower or "contains" in name_lower:
             continue
         if "(contains)" in city.lower() or "(contains)" in addr.lower():
             continue
             
-        # 3. Drop navigational elements
         if name_lower in banned_words:
             continue
             
@@ -157,7 +158,6 @@ for row in parser.rows:
         follow_date = row[5][0].strip() if len(row) > 5 else ""
         follow_score = row[6][0].strip() if len(row) > 6 else ""
 
-        # Extract hidden Javascript tooltips for violation items
         notes = []
         for cell_text, onmouseover in row:
             if onmouseover:
@@ -170,11 +170,9 @@ for row in parser.rows:
         clean_notes = "; ".join(notes)
         output_data.append([name, addr, city, last_date, last_score, follow_date, follow_score, clean_notes])
 
-# 4. Target the trailing repeat anomaly exclusively at the end of the file.
 while len(output_data) > 1 and output_data[-1] == output_data[-2]:
     output_data.pop()
 
-# Write final clean dataset to CSV
 headers = ["Premise Name", "Premise Address 1", "Premise City", "Last Insp Date", "Last Insp Score", "Follow Insp Date", "Follow Insp Score", "Notes"]
 with open("$OUTPUT_CSV", "w", newline="", encoding="utf-8") as csv_file:
     writer = csv.writer(csv_file, quoting=csv.QUOTE_ALL)
